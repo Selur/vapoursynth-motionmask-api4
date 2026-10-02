@@ -8,12 +8,15 @@ previous frame.
 This is a port of the mt_motion filter from pinterf's updated version
 of the Avisynth plugin MaskTools.
 
+This version uses the VapourSynth API4 and requires VapourSynth R55 or
+newer.
+
 
 Usage
 =====
 ::
 
-    motionmask.MotionMask(clip clip, [int[] planes=all, int[] th1=[10, 10, 10], int[] th2=[10, 10, 10], int tht=10, int sc_value=0])
+    motionmask.MotionMask(vnode clip,[int[] planes=all, int[] th1=[10, 10, 10], int[] th2=[10, 10, 10], int tht=10, int sc_value=0])
 
 
 Parameters:

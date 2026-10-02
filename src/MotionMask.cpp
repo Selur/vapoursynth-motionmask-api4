@@ -8,8 +8,8 @@
 #include <emmintrin.h>
 #endif
 
-#include <VapourSynth.h>
-#include <VSHelper.h>
+#include <VapourSynth4.h>
+#include <VSHelper4.h>
 
 
 template <typename PixelType>
@@ -141,8 +141,8 @@ static void mask_sse2_op(uint8_t *pDst, const uint8_t *pSrc1, const uint8_t *pSr
 
 
 typedef struct MotionMaskData {
-    VSNodeRef *clip;
-    const VSVideoInfo *vi;
+    VSNode *clip;
+    VSVideoInfo vi;
 
     int process[3];
     int nLowThresholds[3];
@@ -156,31 +156,20 @@ typedef struct MotionMaskData {
 } MotionMaskData;
 
 
-static void VS_CC motionMaskInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    (void)in;
-    (void)out;
-    (void)core;
-
-    MotionMaskData *d = (MotionMaskData *) *instanceData;
-
-    vsapi->setVideoInfo(d->vi, 1, node);
-}
-
-
-static const VSFrameRef *VS_CC motionMaskGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+static const VSFrame *VS_CC motionMaskGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     (void)frameData;
 
-    const MotionMaskData *d = (const MotionMaskData *) *instanceData;
+    const MotionMaskData *d = (const MotionMaskData *)instanceData;
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(std::max(0, n - 1), d->clip, frameCtx);
 
         vsapi->requestFrameFilter(n, d->clip, frameCtx);
     } else if (activationReason == arAllFramesReady) {
-        const VSFrameRef *prev = vsapi->getFrameFilter(std::max(0, n - 1), d->clip, frameCtx);
-        const VSFrameRef *src = vsapi->getFrameFilter(n, d->clip, frameCtx);
+        const VSFrame *prev = vsapi->getFrameFilter(std::max(0, n - 1), d->clip, frameCtx);
+        const VSFrame *src = vsapi->getFrameFilter(n, d->clip, frameCtx);
 
-        const VSFrameRef *plane_src[3] = {
+        const VSFrame *plane_src[3] = {
             d->process[0] ? nullptr : src,
             d->process[1] ? nullptr : src,
             d->process[2] ? nullptr : src
@@ -188,26 +177,26 @@ static const VSFrameRef *VS_CC motionMaskGetFrame(int n, int activationReason, v
 
         int planes[3] = { 0, 1, 2 };
 
-        VSFrameRef *dst = vsapi->newVideoFrame2(d->vi->format, d->vi->width, d->vi->height, plane_src, planes, src, core);
+        VSFrame *dst = vsapi->newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, plane_src, planes, src, core);
 
-        int pixel_max = (1 << d->vi->format->bitsPerSample) - 1;
+        int pixel_max = (1 << d->vi.format.bitsPerSample) - 1;
 
         bool scene_change = false;
 
         if (d->nMotionThreshold != pixel_max) {
-            uint64_t sad = d->sad_function(vsapi->getReadPtr(prev, 0), vsapi->getReadPtr(src, 0), vsapi->getStride(src, 0), d->vi->width, d->vi->height);
+            uint64_t sad = d->sad_function(vsapi->getReadPtr(prev, 0), vsapi->getReadPtr(src, 0), vsapi->getStride(src, 0), d->vi.width, d->vi.height);
 
-            scene_change = sad > (uint64_t)d->nMotionThreshold * d->vi->width * d->vi->height;
+            scene_change = sad > (uint64_t)d->nMotionThreshold * d->vi.width * d->vi.height;
         }
 
-        for (int plane = 0; plane < d->vi->format->numPlanes; plane++) {
+        for (int plane = 0; plane < d->vi.format.numPlanes; plane++) {
             if (!d->process[plane])
                 continue;
 
             const uint8_t *pSrc1 = vsapi->getReadPtr(prev, plane);
             const uint8_t *pSrc2 = vsapi->getReadPtr(src, plane);
             uint8_t *pDst = vsapi->getWritePtr(dst, plane);
-            int stride = vsapi->getStride(src, plane);
+            ptrdiff_t stride = vsapi->getStride(src, plane);
             int width = vsapi->getFrameWidth(src, plane);
             int height = vsapi->getFrameHeight(src, plane);
 
@@ -240,7 +229,7 @@ static void VS_CC motionMaskFree(void *instanceData, VSCore *core, const VSAPI *
 
 
 static void selectFunctions(MotionMaskData *d) {
-    if (d->vi->format->bitsPerSample == 8) {
+    if (d->vi.format.bitsPerSample == 8) {
 #ifdef MOTIONMASK_X86
         d->sad_function = sad_sse2_op;
         d->mask_function = mask_sse2_op;
@@ -266,79 +255,77 @@ static void VS_CC motionMaskCreate(const VSMap *in, VSMap *out, void *userData, 
     int err;
 
     for (int i = 0; i < 3; i++) {
-        d.nLowThresholds[i] = int64ToIntS(vsapi->propGetInt(in, "th1", i, &err));
+        d.nLowThresholds[i] = vsapi->mapGetIntSaturated(in, "th1", i, &err);
         if (err)
             d.nLowThresholds[i] = (i == 0) ? 10 : d.nLowThresholds[i - 1];
 
-        d.nHighThresholds[i] = int64ToIntS(vsapi->propGetInt(in, "th2", i, &err));
+        d.nHighThresholds[i] = vsapi->mapGetIntSaturated(in, "th2", i, &err);
         if (err)
             d.nHighThresholds[i] = (i == 0) ? 10 : d.nHighThresholds[i - 1];
     }
 
-    d.nMotionThreshold = int64ToIntS(vsapi->propGetInt(in, "tht", 0, &err));
+    d.nMotionThreshold = vsapi->mapGetIntSaturated(in, "tht", 0, &err);
     if (err)
         d.nMotionThreshold = 10;
 
-    d.nSceneChangeValue = int64ToIntS(vsapi->propGetInt(in, "sc_value", 0, &err));
-    
+    d.nSceneChangeValue = vsapi->mapGetIntSaturated(in, "sc_value", 0, &err);
+
 
     for (int i = 0; i < 3; i++) {
         if (d.nLowThresholds[i] < 0 || d.nLowThresholds[i] > 255) {
-            vsapi->setError(out, "MotionMask: th1 must be between 0 and 255 (inclusive).");
+            vsapi->mapSetError(out, "MotionMask: th1 must be between 0 and 255 (inclusive).");
             return;
         }
 
         if (d.nHighThresholds[i] < 0 || d.nHighThresholds[i] > 255) {
-            vsapi->setError(out, "MotionMask: th2 must be between 0 and 255 (inclusive).");
+            vsapi->mapSetError(out, "MotionMask: th2 must be between 0 and 255 (inclusive).");
             return;
         }
     }
 
     if (d.nMotionThreshold < 0 || d.nMotionThreshold > 255) {
-        vsapi->setError(out, "MotionMask: tht must be between 0 and 255 (inclusive).");
+        vsapi->mapSetError(out, "MotionMask: tht must be between 0 and 255 (inclusive).");
         return;
     }
 
     if (d.nSceneChangeValue < 0 || d.nSceneChangeValue > 255) {
-        vsapi->setError(out, "MotionMask: sc_value must be between 0 and 255 (inclusive).");
+        vsapi->mapSetError(out, "MotionMask: sc_value must be between 0 and 255 (inclusive).");
         return;
     }
 
 
-    d.clip = vsapi->propGetNode(in, "clip", 0, NULL);
-    d.vi = vsapi->getVideoInfo(d.clip);
+    d.clip = vsapi->mapGetNode(in, "clip", 0, NULL);
+    d.vi = *vsapi->getVideoInfo(d.clip);
 
 
-    if (!d.vi->format ||
-        d.vi->format->sampleType != stInteger ||
-        d.vi->format->bitsPerSample > 16 ||
-        d.vi->format->colorFamily == cmRGB ||
-        d.vi->width == 0 ||
-        d.vi->height == 0) {
-        vsapi->setError(out, "MotionMask: only 8..16 bit integer not RGB clips with constant format and dimensions are supported.");
+    if (!vsh::isConstantVideoFormat(&d.vi) ||
+        d.vi.format.sampleType != stInteger ||
+        d.vi.format.bitsPerSample > 16 ||
+        d.vi.format.colorFamily == cfRGB) {
+        vsapi->mapSetError(out, "MotionMask: only 8..16 bit integer not RGB clips with constant format and dimensions are supported.");
         vsapi->freeNode(d.clip);
         return;
     }
 
 
-    int n = d.vi->format->numPlanes;
-    int m = vsapi->propNumElements(in, "planes");
+    int n = d.vi.format.numPlanes;
+    int m = vsapi->mapNumElements(in, "planes");
 
     for (int i = 0; i < 3; i++)
         d.process[i] = (m <= 0);
 
     for (int i = 0; i < m; i++) {
-        int o = int64ToIntS(vsapi->propGetInt(in, "planes", i, 0));
+        int o = vsapi->mapGetIntSaturated(in, "planes", i, 0);
 
         if (o < 0 || o >= n) {
             vsapi->freeNode(d.clip);
-            vsapi->setError(out, "MotionMask: plane index out of range");
+            vsapi->mapSetError(out, "MotionMask: plane index out of range");
             return;
         }
 
         if (d.process[o]) {
             vsapi->freeNode(d.clip);
-            vsapi->setError(out, "MotionMask: plane specified twice");
+            vsapi->mapSetError(out, "MotionMask: plane specified twice");
             return;
         }
 
@@ -346,7 +333,7 @@ static void VS_CC motionMaskCreate(const VSMap *in, VSMap *out, void *userData, 
     }
 
 
-    int pixel_max = (1 << d.vi->format->bitsPerSample) - 1;
+    int pixel_max = (1 << d.vi.format.bitsPerSample) - 1;
 
     for (int i = 0; i < 3; i++) {
         d.nLowThresholds[i] = d.nLowThresholds[i] * pixel_max / 255;
@@ -365,18 +352,20 @@ static void VS_CC motionMaskCreate(const VSMap *in, VSMap *out, void *userData, 
     MotionMaskData *data = (MotionMaskData *)malloc(sizeof(d));
     *data = d;
 
-    vsapi->createFilter(in, out, "MotionMask", motionMaskInit, motionMaskGetFrame, motionMaskFree, fmParallel, 0, data, core);
+    VSFilterDependency deps[] = { { data->clip, rpGeneral } };
+
+    vsapi->createVideoFilter(out, "MotionMask", &data->vi, motionMaskGetFrame, motionMaskFree, fmParallel, deps, 1, data, core);
 }
 
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
-    configFunc("com.nodame.motionmask", "motionmask", "MotionMask creates a mask of moving pixels", VAPOURSYNTH_API_VERSION, 1, plugin);
-    registerFunc("MotionMask",
-            "clip:clip;"
+VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
+    vspapi->configPlugin("com.nodame.motionmask", "motionmask", "MotionMask creates a mask of moving pixels", VS_MAKE_VERSION(2, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->registerFunction("MotionMask",
+            "clip:vnode;"
             "planes:int[]:opt;"
             "th1:int[]:opt;"
             "th2:int[]:opt;"
             "tht:int:opt;"
             "sc_value:int:opt;"
-            , motionMaskCreate, 0, plugin);
+            , "clip:vnode;", motionMaskCreate, nullptr, plugin);
 }
